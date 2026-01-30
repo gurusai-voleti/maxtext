@@ -73,10 +73,14 @@ os.environ["SKIP_JAX_PRECOMPILE"] = "1"
 
 from MaxText import pyconfig
 from MaxText.globals import MAXTEXT_CONFIGS_DIR
-from MaxText.integration.tunix.tunix_adapter import TunixMaxTextAdapter
 from MaxText.rl.evaluate_rl import evaluate
 from MaxText.rl import utils_rl
+<<<<<<< HEAD
 from maxtext.input_pipeline.instruction_data_processing import load_template_from_file
+=======
+from MaxText.input_pipeline.instruction_data_processing import load_template_from_file
+from maxtext.integration.tunix.tunix_adapter import TunixMaxTextAdapter
+>>>>>>> 9dd5957af (Move src/MaxText/integration to src/maxtext/integration)
 from maxtext.utils import max_logging, max_utils, maxtext_utils, model_creation_utils
 
 
