@@ -524,7 +524,8 @@ class AttentionOp(nnx.Module):
       self.AqtEinsum_3 = jnp.einsum
 
   def _logical_to_mesh_axes(self, logical_name):
-    return logical_to_mesh_axes(logical_name, mesh=self.mesh, rules=self.config.logical_axis_rules)
+    logical_rules = None if self.config.using_pipeline_parallelism else self.config.logical_axis_rules
+    return logical_to_mesh_axes(logical_name, mesh=self.mesh, rules=logical_rules)
 
   def check_attention_inputs(self, query: Array, key: Array | KVTensor, value: Array | KVTensor) -> None:
     """Check attention inputs."""
