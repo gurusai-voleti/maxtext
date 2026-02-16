@@ -596,7 +596,7 @@ def main(argv: Sequence[str]) -> None:
       if elastic_mode == "replica-resize":
         train = max_utils.elastic_manager.replica_resize(
             max_resizes=10,  # Handle up to 10 slice up or slice down transitions
-            poll_interval=300,  # Monitor thread checks inactive slice health every 5 minutes
+            poll_interval=10,  # Monitor thread checks inactive slice health every 10 seconds
         )(train)
       elif elastic_mode == "pause-resume":
         train = max_utils.elastic_manager.pause_resume(
