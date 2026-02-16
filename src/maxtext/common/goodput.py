@@ -27,6 +27,12 @@ from maxtext.common.gcloud_stub import goodput_modules
 
 goodput, monitoring, _GOODPUT_STUB = goodput_modules()
 
+def noop(*args, **kwargs):
+  max_logging.log("Performing a no-op")
+
+
+monitoring._final_goodput_query_and_upload = noop
+
 
 class GoodputEvent(Enum):
   JOB = "job"
