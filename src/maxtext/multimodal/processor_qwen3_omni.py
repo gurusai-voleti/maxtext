@@ -90,6 +90,7 @@ class Qwen3OmniPreprocessorOutput(mm_utils.PreprocessorOutput):
   num_audios: int = 0
   audio_values: None | np.ndarray = None
   audio_mask: None | np.ndarray = None
+  audio_lengths: None | np.ndarray = None
 
 
 def smart_resize(
@@ -498,6 +499,11 @@ def preprocess_mm_data_qwen3_omni(config):
     mt_audio, mt_audio_mask = pre_process_audio_qwen3_omni(mt_audio)
     processor_outputs.audio_values = mt_audio
     processor_outputs.audio_mask = mt_audio_mask
+    # Compute audio_lengths from audio_mask
+    audio_mask_sum = np.sum(mt_audio_mask, axis=-1)
+    audio_lengths = _get_feat_extract_output_lengths(audio_mask_sum)
+    processor_outputs.audio_lengths = np.array(audio_lengths, dtype=np.int32)
+    processor_outputs.num_audios = len(processor_outputs.audio_lengths)
 
   return processor_outputs
 

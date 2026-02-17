@@ -584,35 +584,60 @@ class TestQwen3OmniPreprocessing(unittest.TestCase):
   """Test MaxText Qwen3 Omni preprocessor against HuggingFace reference."""
 
   def setUp(self):
+    # Remove empty HF token environment variables that cause httpx errors
+    self._original_hf_token = os.environ.pop('HF_TOKEN', None)
+    self._original_hf_hub_token = os.environ.pop('HUGGING_FACE_HUB_TOKEN', None)
+    
     self.base_config_path = os.path.join(MAXTEXT_REPO_ROOT, "src", "maxtext", "configs", "base.yml")
     self.image_path = os.path.join(MAXTEXT_REPO_ROOT, "tests", "assets", "test_image.jpg")
     self.video_path = os.path.join(MAXTEXT_REPO_ROOT, "tests", "assets", "test_video.mp4")
+    self.prompt = "What can you see and hear? Answer in one short sentence."
     self.maxtext_config = pyconfig.initialize(
         ["", self.base_config_path],
         model_name="qwen3-omni-30b-a3b",
+        tokenizer_type="huggingface",
+        tokenizer_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         use_multimodal=True,
         image_path=self.image_path,
         video_path=self.video_path,
         use_audio_in_video=True,
+        max_prefill_predict_length=2048,
     )
 
   def test_preprocess_mm_data(self):
     # MaxText preprocessor
     mt_processor_outputs = mm_processor.preprocess_mm_data(self.maxtext_config)
+    mt_prompt = mm_processor.reformat_prompt(
+        prompt=self.prompt,
+        image_placeholder=self.maxtext_config.image_placeholder,
+        model_name=self.maxtext_config.model_name,
+        num_images=mt_processor_outputs.num_images,
+    )
+
+    from MaxText import maxengine
+
+    engine = maxengine.MaxEngine(self.maxtext_config)
+    metadata = engine.get_tokenizer()
+    tokenizer_model = engine.build_tokenizer(metadata)
+    mt_input_ids, _ = tokenizer_model.encode(mt_prompt, is_bos=False, prefill_lengths=[self.maxtext_config.max_prefill_predict_length])
+    mt_input_ids = mm_processor.prepare_text_for_image_fusion(
+        mt_input_ids, config=self.maxtext_config, processor_output=mt_processor_outputs
+    )
+    print("MaxText tokenized prompt:", mt_input_ids)
 
     # HuggingFace preprocessor
     from transformers import Qwen3OmniMoeProcessor  # pylint: disable=import-outside-toplevel
     from qwen_omni_utils import process_mm_info  # pylint: disable=import-outside-toplevel
 
     MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    processor = Qwen3OmniMoeProcessor.from_pretrained(MODEL_PATH)
+    processor = Qwen3OmniMoeProcessor.from_pretrained(MODEL_PATH, token=False)
     conversation = [
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": self.image_path},
                 {"type": "video", "video": self.video_path},
-                {"type": "text", "text": "What can you see and hear? Answer in one short sentence."},
+                {"type": "text", "text": self.prompt},
             ],
         },
     ]
@@ -628,9 +653,13 @@ class TestQwen3OmniPreprocessing(unittest.TestCase):
         padding=True,
         use_audio_in_video=USE_AUDIO_IN_VIDEO,
     )
+    hf_prompt = processor.decode(hf_processor_outputs["input_ids"][0], skip_special_tokens=False)
+    hf_input_ids = np.array(hf_processor_outputs["input_ids"][0, :]).astype(np.float32)
+    print("HuggingFace tokenized prompt:", hf_input_ids)
 
     # Add assertions to check the output
     self.assertIsNotNone(mt_processor_outputs)
+    assert np.array_equal(mt_input_ids[:hf_input_ids.shape[0]], hf_input_ids)
     assert np.allclose(
         mt_processor_outputs.pixel_values,
         np.array(hf_processor_outputs["pixel_values"]).astype(np.float32),
