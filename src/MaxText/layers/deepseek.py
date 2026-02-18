@@ -39,6 +39,9 @@ from MaxText.sharding import maybe_shard_with_logical
 from maxtext.utils import max_utils
 from maxtext.inference import page_manager
 
+from MaxText.layers.engram import Engram, NgramHashMapping
+import transformers
+
 # -----------------------------------------
 # The Decoder Layer for DeepSeek v3
 # -----------------------------------------
@@ -58,6 +61,7 @@ class DeepSeekGenericLayer(nnx.Module):
       mesh: Mesh,
       rngs: nnx.Rngs,
       quant: Optional[quantizations.AqtQuantization] = None,
+      layer_idx: int = -1,
   ) -> None:
 
     self.config = config
@@ -66,6 +70,35 @@ class DeepSeekGenericLayer(nnx.Module):
     self.quant = quant
     self.rngs = rngs
     self.is_mhc_enabled = config.mhc_expansion_rate > 1
+    self.layer_idx = layer_idx
+
+    if layer_idx in config.engram_layers:
+      tokenizer = transformers.AutoTokenizer.from_pretrained(
+        config.tokenizer_path,
+        token=config.hf_access_token)
+      self.engram_hash_mapping = NgramHashMapping(
+          engram_vocab_bases=config.engram_vocab_sizes,
+          max_ngram_size=config.engram_max_ngram_size,
+          engram_num_heads=config.engram_num_heads,
+          layer_ids=[layer_idx],
+          tokenizer=tokenizer,
+          pad_id=tokenizer.pad_token_id,
+          seed=config.engram_seed,
+      )
+      self.engram = Engram(
+          config=config,
+          mesh=mesh,
+          vocab_sizes=self.engram_hash_mapping.get_vocab_sizes(layer_idx),
+          engram_num_heads=config.engram_num_heads,
+          engram_head_dim=config.engram_head_dim,
+          engram_max_ngram_size=config.engram_max_ngram_size,
+          engram_kernel_size=config.engram_kernel_size,
+          mhc_expansion_rate=config.mhc_expansion_rate,
+          quant=quant,
+          rngs=rngs,
+      )
+    else:
+      self.engram = None
 
     batch_size, sequence_length = max_utils.get_batch_seq_len_for_mode(self.config, self.model_mode)
     self.dummy_inputs_shape = (batch_size, sequence_length, self.config.emb_dim)
@@ -220,6 +253,7 @@ class DeepSeekGenericLayer(nnx.Module):
       previous_chunk=None,
       page_state: None | page_manager.PageState = None,
       slot: None | int = None,
+      decoder_input_tokens=None,
   ):
     """self-attention with normalization"""
     if self.is_mhc_enabled:
@@ -251,6 +285,12 @@ class DeepSeekGenericLayer(nnx.Module):
       intermediate_inputs = inputs + attention_lnx
     # Normalization
     hidden_states = self.post_attention_norm_op(intermediate_inputs)
+
+    if self.engram and decoder_input_tokens is not None:
+      hash_ids = self.engram_hash_mapping(decoder_input_tokens)[self.layer_idx]
+      engram_output = self.engram(hidden_states, hash_ids)
+      intermediate_inputs = intermediate_inputs + engram_output
+
     return hidden_states, intermediate_inputs
 
 
@@ -264,8 +304,9 @@ class DeepSeekDenseLayer(DeepSeekGenericLayer):
       mesh: Mesh,
       rngs: nnx.Rngs,
       quant: Optional[quantizations.AqtQuantization] = None,
+      layer_idx: int = -1,
   ) -> None:
-    super().__init__(config, model_mode, mesh, rngs, quant)
+    super().__init__(config, model_mode, mesh, rngs, quant, layer_idx)
     self.mlp = linears.MlpBlock(
         in_features=self.dummy_inputs_shape[-1],
         intermediate_dim=self.config.mlp_dim,
@@ -297,6 +338,7 @@ class DeepSeekDenseLayer(DeepSeekGenericLayer):
       slot: None | int = None,
       kv_cache=None,
       attention_metadata=None,
+      decoder_input_tokens=None,
   ):
     # Unpack inputs if it's a tuple (e.g. from a previous layer returning (hidden_states, kv_cache))
     if isinstance(inputs, tuple):
@@ -312,6 +354,7 @@ class DeepSeekDenseLayer(DeepSeekGenericLayer):
         previous_chunk,
         page_state,
         slot,
+        decoder_input_tokens=decoder_input_tokens,
     )
 
     if self.is_mhc_enabled:
@@ -350,9 +393,10 @@ class DeepSeekMoELayer(DeepSeekGenericLayer):
       mesh: Mesh,
       rngs: nnx.Rngs,
       quant: Optional[quantizations.AqtQuantization] = None,
+      layer_idx: int = -1,
   ) -> None:
 
-    super().__init__(config, model_mode, mesh, rngs, quant)
+    super().__init__(config, model_mode, mesh, rngs, quant, layer_idx)
     self.DeepSeekMoeBlock_0 = moe.RoutedAndSharedMoE(
         config=self.config,
         mesh=mesh,
@@ -376,11 +420,12 @@ class DeepSeekMoELayer(DeepSeekGenericLayer):
       slot: None | int = None,
       kv_cache=None,
       attention_metadata=None,
+      decoder_input_tokens=None,
   ):
     # Unpack inputs if it's a tuple (e.g. from a previous layer returning (hidden_states, kv_cache))
     if isinstance(inputs, tuple):
       inputs = inputs[0]
-
+    
     # If using batch split schedule, call the batch split version of the layer.
     if self.config.use_batch_split_schedule:
       outputs = deepseek_batchsplit.batch_split_schedule(
@@ -406,6 +451,7 @@ class DeepSeekMoELayer(DeepSeekGenericLayer):
         previous_chunk,
         page_state,
         slot,
+        decoder_input_tokens=decoder_input_tokens,
     )
 
     if self.is_mhc_enabled:

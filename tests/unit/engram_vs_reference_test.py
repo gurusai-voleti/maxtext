@@ -78,8 +78,6 @@ class Config:
   engram_head_dim: int = 32
   engram_num_heads: int = 8  # num heads per n-gram
   # Hashing
-  # TODO(shuningjin): double check whether this can be replaced with tokenizer.pad_id
-  engram_pad_id: int = 2
   engram_seed: int = 0
 
 
@@ -539,7 +537,7 @@ class NgramHashMappingTest(parameterized.TestCase):
         engram_num_heads=self.config.engram_num_heads,
         layer_ids=self.config.engram_layer_ids,
         tokenizer=tokenizer,
-        pad_id=self.config.engram_pad_id,
+        pad_id=tokenizer.pad_token_id,
         seed=self.config.engram_seed,
     )
     jax_out = jax_hash_mapping(input_ids)
@@ -761,7 +759,7 @@ class EngramTest(parameterized.TestCase):
         engram_num_heads=self.config.engram_num_heads,
         layer_ids=self.config.engram_layer_ids,
         tokenizer=tokenizer,
-        pad_id=self.config.engram_pad_id,
+        pad_id=tokenizer.pad_token_id,
         seed=self.config.engram_seed,
     )
     vocab_sizes = jax_hash_mapping.get_vocab_sizes(self.layer_id)  # layer specific
