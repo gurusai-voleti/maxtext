@@ -875,7 +875,7 @@ class Decoder(nn.Module):
           for layer, num_layers, layer_prefix in zip(layers, num_layers_list, layer_prefixes):
             for index in range(num_layers):
               global_layer_idx = global_layer_idx_offset + index
-              kv_cache = kv_caches[global_layer_idx] if kv_caches is not None else None
+              kv_cache = kv_caches[index] if kv_caches is not None else None
               y, kv_cache = layer(
                   config=cfg,
                   mesh=mesh,
@@ -897,7 +897,7 @@ class Decoder(nn.Module):
                   decoder_input_tokens=decoder_input_tokens,
               )
               if kv_caches is not None and kv_cache is not None:
-                kv_caches[global_layer_idx] = kv_cache
+                kv_caches[index] = kv_cache
             global_layer_idx_offset += num_layers
         else:
           for lyr in range(cfg.num_decoder_layers):

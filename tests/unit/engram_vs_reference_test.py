@@ -42,6 +42,7 @@ from torch import nn
 
 from flax import nnx
 import jax
+from jax import config
 import jax.numpy as jnp
 from jax.sharding import Mesh
 
@@ -55,6 +56,13 @@ from MaxText.layers.engram import MultiHeadEmbedding as MultiHeadEmbeddingJAX
 from MaxText.layers.engram import ShortConv as ShortConvJAX
 from MaxText.layers.engram import Engram as EngramJAX
 
+
+def setUpModule():
+    """
+    Enable 64-bit precision for JAX. Must be set before 
+    any JAX operations to prevent silent downcasting from int64 to int32.
+    """
+    config.update("jax_enable_x64", True)
 
 # -----------------------------------------------------------------------------
 # Config
@@ -78,6 +86,8 @@ class Config:
   engram_head_dim: int = 32
   engram_num_heads: int = 8  # num heads per n-gram
   # Hashing
+  # This can be replaced with tokenizer.pad_token_id
+  engram_pad_id: int = 2
   engram_seed: int = 0
 
 
@@ -444,7 +454,6 @@ class Engram(nn.Module):
 # Test JAX Module: Helper
 # -----------------------------------------------------------------------------
 
-
 def to_jax(pt_tensor: torch.Tensor) -> jax.Array:
   return jnp.asarray(pt_tensor.detach().cpu().numpy())
 
@@ -537,7 +546,7 @@ class NgramHashMappingTest(parameterized.TestCase):
         engram_num_heads=self.config.engram_num_heads,
         layer_ids=self.config.engram_layer_ids,
         tokenizer=tokenizer,
-        pad_id=tokenizer.pad_token_id,
+        pad_id=self.config.engram_pad_id,
         seed=self.config.engram_seed,
     )
     jax_out = jax_hash_mapping(input_ids)
@@ -603,7 +612,10 @@ class MultiHeadEmbeddingTest(parameterized.TestCase):
 
     # 3. Compare
     # Check offsets
-    np.testing.assert_array_equal(jax_model.offsets, to_jax(pt_model.offsets))
+    jax_offsets = jax_model.offsets
+    if hasattr(jax_offsets, "val"):
+      jax_offsets = jax_offsets.val
+    np.testing.assert_array_equal(jax_offsets, to_jax(pt_model.offsets))
     # Check outputs
     np.testing.assert_allclose(y_jax, to_jax(y_pt), rtol=1e-5, atol=1e-5)
 
@@ -759,7 +771,7 @@ class EngramTest(parameterized.TestCase):
         engram_num_heads=self.config.engram_num_heads,
         layer_ids=self.config.engram_layer_ids,
         tokenizer=tokenizer,
-        pad_id=tokenizer.pad_token_id,
+        pad_id=self.config.engram_pad_id,
         seed=self.config.engram_seed,
     )
     vocab_sizes = jax_hash_mapping.get_vocab_sizes(self.layer_id)  # layer specific

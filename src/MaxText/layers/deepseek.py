@@ -71,34 +71,7 @@ class DeepSeekGenericLayer(nnx.Module):
     self.rngs = rngs
     self.is_mhc_enabled = config.mhc_expansion_rate > 1
     self.layer_idx = layer_idx
-
-    if layer_idx in config.engram_layers:
-      tokenizer = transformers.AutoTokenizer.from_pretrained(
-        config.tokenizer_path,
-        token=config.hf_access_token)
-      self.engram_hash_mapping = NgramHashMapping(
-          engram_vocab_bases=config.engram_vocab_sizes,
-          max_ngram_size=config.engram_max_ngram_size,
-          engram_num_heads=config.engram_num_heads,
-          layer_ids=[layer_idx],
-          tokenizer=tokenizer,
-          pad_id=tokenizer.pad_token_id,
-          seed=config.engram_seed,
-      )
-      self.engram = Engram(
-          config=config,
-          mesh=mesh,
-          vocab_sizes=self.engram_hash_mapping.get_vocab_sizes(layer_idx),
-          engram_num_heads=config.engram_num_heads,
-          engram_head_dim=config.engram_head_dim,
-          engram_max_ngram_size=config.engram_max_ngram_size,
-          engram_kernel_size=config.engram_kernel_size,
-          mhc_expansion_rate=config.mhc_expansion_rate,
-          quant=quant,
-          rngs=rngs,
-      )
-    else:
-      self.engram = None
+    self.is_engram_enabled = config.engram_layers and layer_idx in config.engram_layers
 
     batch_size, sequence_length = max_utils.get_batch_seq_len_for_mode(self.config, self.model_mode)
     self.dummy_inputs_shape = (batch_size, sequence_length, self.config.emb_dim)
@@ -123,6 +96,45 @@ class DeepSeekGenericLayer(nnx.Module):
         epsilon=self.config.normalization_layer_epsilon,
         rngs=rngs,
     )
+
+    if self.is_engram_enabled:
+      self.engram_layer_norm = RMSNorm(
+          num_features=self.dummy_inputs_shape[-1],
+          dtype=self.config.dtype,
+          weight_dtype=self.config.weight_dtype,
+          kernel_axes=("norm",),
+          epsilon=self.config.normalization_layer_epsilon,
+          rngs=rngs,
+      )
+      tokenizer = transformers.AutoTokenizer.from_pretrained(
+        config.tokenizer_path,
+        token=config.hf_access_token)
+      # TODO(ranran): Refactor NgramHashMapping to initialize once globally or at the model level. 
+      # Moving this to decoders.py currently causes JAX initialization errors.
+      self.ngram_hash_mapping = NgramHashMapping(
+          engram_vocab_bases=config.engram_vocab_sizes,
+          max_ngram_size=config.engram_max_ngram_size,
+          engram_num_heads=config.engram_num_heads,
+          layer_ids=[layer_idx],
+          tokenizer=tokenizer,
+          pad_id=tokenizer.pad_token_id,
+          seed=config.engram_seed,
+      )
+      self.engram = Engram(
+          config=config,
+          mesh=mesh,
+          vocab_sizes=self.ngram_hash_mapping.get_vocab_sizes(layer_idx),
+          engram_num_heads=config.engram_num_heads,
+          engram_head_dim=config.engram_head_dim,
+          engram_max_ngram_size=config.engram_max_ngram_size,
+          engram_kernel_size=config.engram_kernel_size,
+          mhc_expansion_rate=config.mhc_expansion_rate,
+          quant=quant,
+          rngs=rngs,
+      )
+    else:
+      self.engram_layer_norm = None
+      self.engram = None
 
     self.self_attention = attention_mla.MLA(
         config=self.config,
@@ -285,13 +297,12 @@ class DeepSeekGenericLayer(nnx.Module):
       intermediate_inputs = inputs + attention_lnx
     # Normalization
     hidden_states = self.post_attention_norm_op(intermediate_inputs)
-
-    if self.engram and decoder_input_tokens is not None:
-      hash_ids = self.engram_hash_mapping(decoder_input_tokens)[self.layer_idx]
-      engram_output = self.engram(hidden_states, hash_ids)
-      intermediate_inputs = intermediate_inputs + engram_output
-
     return hidden_states, intermediate_inputs
+
+  def engram_op(self, x, decoder_input_tokens):
+    normed_x = self.engram_layer_norm(x)
+    hash_ids = self.ngram_hash_mapping(decoder_input_tokens)[self.layer_idx]
+    return self.engram(normed_x, hash_ids)
 
 
 class DeepSeekDenseLayer(DeepSeekGenericLayer):
@@ -345,6 +356,10 @@ class DeepSeekDenseLayer(DeepSeekGenericLayer):
       inputs = inputs[0]
     x = self.with_logical_constraint(inputs)
     x = checkpoint_name(x, "decoder_layer_input")
+
+    if self.is_engram_enabled:
+      engram_output = self.engram_op(x, decoder_input_tokens)
+      x = x + engram_output
 
     hidden_states, intermediate_inputs = self.self_attention_with_norm_op(
         x,
@@ -442,6 +457,10 @@ class DeepSeekMoELayer(DeepSeekGenericLayer):
 
     x = self.with_logical_constraint(inputs)
     x = checkpoint_name(x, "decoder_layer_input")
+
+    if self.is_engram_enabled:
+      engram_output = self.engram_op(x, decoder_input_tokens)
+      x = x + engram_output
 
     hidden_states, intermediate_inputs = self.self_attention_with_norm_op(
         x,
